@@ -3,7 +3,7 @@
 ## ¿Qué debes ser capaz de hacer?
 
 No se espera que memorices Three.js, TSL o WebGPU. Sí debes poder:
-
+ 
 1. Explicar dónde vive el estado de las partículas;
 2. Localizar las fuerzas y relacionarlas con ecuaciones;
 3. Predecir qué debería ocurrir al aislar una fuerza;
