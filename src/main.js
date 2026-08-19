@@ -125,7 +125,7 @@ async function main() {
   const robotLoader = new GLTFLoader();
 
   robotLoader.load(
-    '/models/RobotExpressive.glb',
+    './models/RobotExpressive.glb',
     (gltf) => {
       robotModel = gltf.scene;
       robotAnimations = gltf.animations;
