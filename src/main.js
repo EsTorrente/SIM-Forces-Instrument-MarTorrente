@@ -3,54 +3,13 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import WebGPU from 'three/addons/capabilities/WebGPU.js';
 import './styles.css';
 
-// 🤖 ROBOT imports
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-
-// 🎛️ Post-Processing & TSL imports
 import { pass, uv, sin, cos, vec3, vec4, uniform, float, Fn } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 
-import { createParameters } from './simulation/parameters.js';
+import { PARTICLE_COUNT, createParameters } from './simulation/parameters.js';
 import { createSimulation } from './simulation/createSimulation.js';
-
-const PARTICLE_COUNT = 262144;
-const ROBOT_COUNT = 50;
-
-let robotModel;
-let robotAnimations = [];
-let robots = [];
-let robotMixers = [];
-let robotActions = [];
-
-// Dynamic Modifiers
-let spacingMultiplier = 2.7;
-let robotScaleFactor = 0.5;
-let baseRobotSpeed = 0.8;
-let isDancing = false;
-let repulsionForce = 350.0;
-let particleSizeVal = 0.05;
-let simBounds = new THREE.Vector3(20.0, 20.0, 20.0);
-
-let currentFormation = 'line';
-let robotTargets = [];
-let robotDirections = [];
-
-const robotDataArray = Array.from({ length: ROBOT_COUNT }, () => new THREE.Vector4());
-
-// Interactive State
-let forceMode = 4.0;
-let targetColorMode = 0.0;
-let colorMode = 0.0;
-let vibrationLevel = 0.0;
-let pulseFactor = 0.0;
-let speedFactor = 1.0; 
-
-// UI & Camera State
-let uiVisible = true;
-let autoRotateAxis = null; 
-let autoRotateSpeed = 0.01;
-const keys = { up: false, right: false, left: false };
+import { RobotManager } from './robotManager.js';
+import { createLabPanel } from './ui/labPanel.js';
 
 async function main() {
   const mount = document.querySelector('#app');
@@ -78,15 +37,21 @@ async function main() {
   orbit.enableDamping = true;
   orbit.target.set(0, 0, 0);
 
+  // Core Systems
   const params = createParameters();
+  const robotManager = new RobotManager(scene, params);
+  robotManager.load();
 
   const simulation = createSimulation({
     renderer,
     scene,
     params,
     count: PARTICLE_COUNT,
-    robotDataArray 
+    robotDataArray: robotManager.robotDataArray 
   });
+
+  // Attach UI
+  createLabPanel({ params, simulation, robotManager, camera });
 
   // ============================================================
   // 💡 LIGHTING
@@ -187,303 +152,6 @@ async function main() {
 
   postProcessing.outputNode = scanlineCrtPass;
 
-  // ============================================================
-  // 🤖 ROBOT SETUP
-  // ============================================================
-  const robotLoader = new GLTFLoader();
-
-  robotLoader.load(
-    import.meta.env.BASE_URL + 'models/RobotExpressive.glb',
-    (gltf) => {
-      robotModel = gltf.scene;
-      robotAnimations = gltf.animations;
-      createRobots();
-    },
-    undefined,
-    (error) => console.error('❌ Could not load RobotExpressive.glb:', error)
-  );
-
-  function createRobots() {
-    const walkingClip = THREE.AnimationClip.findByName(robotAnimations, 'Walking');
-    const danceClip = THREE.AnimationClip.findByName(robotAnimations, 'Dance');
-
-    if (!walkingClip) return;
-
-    for (let i = 0; i < ROBOT_COUNT; i++) {
-      const robot = SkeletonUtils.clone(robotModel);
-      robot.scale.setScalar(robotScaleFactor);
-      scene.add(robot);
-
-      const mixer = new THREE.AnimationMixer(robot);
-      const walkAction = mixer.clipAction(walkingClip);
-      const danceAction = danceClip ? mixer.clipAction(danceClip) : null;
-      
-      walkAction.play();
-      const timeScale = 0.8 + Math.random() * 0.4;
-      walkAction.timeScale = timeScale;
-      if (danceAction) danceAction.timeScale = timeScale;
-
-      robots.push(robot);
-      robotMixers.push(mixer);
-      robotActions.push({ walk: walkAction, dance: danceAction });
-      
-      robotTargets.push(new THREE.Vector3());
-      robotDirections.push(1);
-    }
-    setFormation('line');
-  }
-
-  function setFormation(formation) {
-    currentFormation = formation;
-    
-    for (let i = 0; i < robots.length; i++) {
-      robots[i].visible = true;
-      robotTargets[i].set(0, 0, 0);
-      robotDirections[i] = 1; 
-    }
-
-    if (formation === 'line') {
-      const maxRank = Math.ceil(ROBOT_COUNT / 2);
-      const spreadX = (simBounds.x * 0.45) / maxRank;
-      const spreadZ = (simBounds.z * 0.45) / maxRank;
-      
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        if (i === 0) {
-          robotTargets[i].set(0, 0, simBounds.z * 0.4);
-        } else {
-          const side = i % 2 === 0 ? 1 : -1;
-          const rank = Math.floor((i + 1) / 2);
-          robotTargets[i].set(side * rank * spreadX, 0, simBounds.z * 0.4 - rank * spreadZ);
-        }
-      }
-    }
-    else if (formation === 'row') {
-      const cols = 10;
-      const rows = 5;
-      const spacingX = (simBounds.x * 0.8) / cols;
-      const spacingZ = (simBounds.z * 0.8) / rows;
-      
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        const x = (col - (cols - 1) / 2) * spacingX;
-        const z = (row - (rows - 1) / 2) * spacingZ;
-        robotTargets[i].set(x, 0, z);
-      }
-    }
-    else if (formation === 'grid') {
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        const isInner = i < 15;
-        const count = isInner ? 15 : 35;
-        const radius = isInner ? simBounds.x * 0.2 : simBounds.x * 0.4;
-        const angle = (i % count) / count * Math.PI * 2;
-        robotTargets[i].set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-        robotDirections[i] = 2; 
-      }
-    }
-    else if (formation === 'triangle') {
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        const leg = i % 4; 
-        const rank = Math.floor(i / 4) + 1;
-        const maxRanks = Math.ceil(ROBOT_COUNT / 4);
-        const dist = (rank / maxRanks) * (simBounds.x * 0.45);
-        const angle = leg * (Math.PI / 2) + Math.PI / 4;
-        robotTargets[i].set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
-      }
-    }
-    else if (formation === 'classic-grid') {
-      const cols = 10;
-      const ROBOT_SPACING = 2.0;
-      const ROW_SPACING = 2.0;
-
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        const row = Math.floor(i / cols);
-        const column = i % cols;
-        const x = (column - 4.5) * ROBOT_SPACING * spacingMultiplier;
-        const y = (row - 2) * ROW_SPACING * spacingMultiplier;
-        robotTargets[i].set(x, y, 0); 
-        robotDirections[i] = row % 2 === 0 ? -3 : 3; 
-      }
-    }
-
-    for (let i = 0; i < robots.length; i++) {
-      robots[i].position.copy(robotTargets[i]);
-    }
-  }
-
-  function updateRobotMovement(delta) {
-    const limitX = simBounds.x * 0.5;
-    const limitZ = simBounds.z * 0.5;
-
-    for (let i = 0; i < robots.length; i++) {
-      const robot = robots[i];
-      robotDataArray[i].set(robot.position.x, robot.position.y, robot.position.z, robot.visible ? 1 : 0);
-      
-      if (!robot.visible) continue;
-      
-      const dir = robotDirections[i];
-
-      if (dir === 2) {
-        const angleSpeed = baseRobotSpeed * delta * 0.2;
-        const x = robot.position.x;
-        const z = robot.position.z;
-        robot.position.x = x * Math.cos(angleSpeed) - z * Math.sin(angleSpeed);
-        robot.position.z = x * Math.sin(angleSpeed) + z * Math.cos(angleSpeed);
-        robot.rotation.y = Math.atan2(robot.position.x, robot.position.z) + Math.PI / 2;
-      } else if (Math.abs(dir) === 3) {
-        const sign = dir === 3 ? 1 : -1;
-        robot.position.x += baseRobotSpeed * delta * sign;
-        robot.rotation.y = sign === 1 ? Math.PI / 2 : -Math.PI / 2;
-
-        if (robot.position.x > limitX) robot.position.x = -limitX;
-        if (robot.position.x < -limitX) robot.position.x = limitX;
-      } else {
-        robot.position.z += baseRobotSpeed * delta * dir;
-        robot.rotation.y = dir === 1 ? 0 : Math.PI;
-
-        if (robot.position.z > limitZ) robot.position.z = -limitZ;
-        if (robot.position.z < -limitZ) robot.position.z = limitZ;
-      }
-    }
-  }
-
-  // ============================================================
-  // 🎛️ UI & EVENTS
-  // ============================================================
-  const slidersContainer = document.createElement('div');
-  slidersContainer.style.cssText = `
-    position: fixed; top: 20px; left: 20px; z-index: 100;
-    color: #fff; background: rgba(10, 10, 15, 0.85); padding: 15px 20px;
-    border-radius: 8px; font-family: monospace; font-size: 12px;
-    display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(0,255,255,0.2);
-    max-height: 90vh; overflow-y: auto; transition: opacity 0.3s ease;
-  `;
-
-  const instructions = document.createElement('div');
-  instructions.innerHTML = `
-    <strong style="color:#0ff; font-size:14px">CONTROLS</strong><br/>
-    [1-4] Forces | [5] P.Size | [6-9, 0] Formations<br/>
-    [W] Dance Toggle | [Arrows] Chaos & Color<br/>
-    [Z/X/Y] Auto-Cam | <strong style="color:#ff0">[H] Hide UI | [F] Fullscreen</strong>
-  `;
-  instructions.style.marginBottom = '10px';
-  instructions.style.lineHeight = '1.4';
-  slidersContainer.appendChild(instructions);
-
-  function createSlider(labelTxt, min, max, step, initial, onChange) {
-    const container = document.createElement('div');
-    container.style.display = 'flex'; container.style.flexDirection = 'column';
-    const label = document.createElement('label');
-    label.innerHTML = `${labelTxt}: <span style="color:#0ff">${initial}</span>`;
-    const slider = document.createElement('input');
-    slider.type = 'range'; slider.min = min; slider.max = max; slider.step = step; slider.value = initial;
-    slider.oninput = (e) => {
-      const val = parseFloat(e.target.value);
-      label.querySelector('span').innerText = val.toFixed(step.includes('.') ? 2 : 0);
-      onChange(val);
-    };
-    container.append(label, slider);
-    slidersContainer.appendChild(container);
-    return slider;
-  }
-
-  createSlider('Robot Scale', '0.1', '2.0', '0.1', '0.5', (v) => { robotScaleFactor = v; robots.forEach(r => r.scale.setScalar(robotScaleFactor)); });
-  const repSlider = createSlider('Repulsion Force', '0', '1500', '10', '350', (v) => { repulsionForce = v; });
-  createSlider('Particle Size', '0.01', '0.5', '0.01', '0.05', (v) => { particleSizeVal = v; });
-  
-  createSlider('Bounds X', '20', '300', '10', '20', (v) => { simBounds.x = v; setFormation(currentFormation); });
-  createSlider('Bounds Y', '20', '300', '10', '20', (v) => { simBounds.y = v; });
-  createSlider('Bounds Z', '20', '300', '10', '20', (v) => { simBounds.z = v; setFormation(currentFormation); });
-
-  document.body.appendChild(slidersContainer);
-
-  addEventListener('mousemove', (event) => {
-    const mouseY = 1.0 - (event.clientY / innerHeight);
-    repulsionForce = mouseY * 1500.0; 
-    
-    if(repSlider) {
-      repSlider.value = repulsionForce;
-      repSlider.previousElementSibling.querySelector('span').innerText = repulsionForce.toFixed(0);
-    }
-  });
-  
-  addEventListener('wheel', (event) => {
-    if (autoRotateAxis) {
-      const zoomSpeed = 0.001;
-      const factor = 1.0 + (event.deltaY * zoomSpeed);
-      const newRadius = camera.position.length() * factor;
-      if (newRadius > 2.0 && newRadius < 200.0) {
-        camera.position.multiplyScalar(factor);
-      }
-    }
-  }, { passive: true });
-
-  addEventListener('keydown', (event) => {
-    if (event.repeat) return;
-    
-    if (event.code === 'KeyR') simulation.reset();
-
-    if (event.code === 'Digit1') forceMode = 1.0;
-    if (event.code === 'Digit2') forceMode = 2.0;
-    if (event.code === 'Digit3') forceMode = 3.0;
-    if (event.code === 'Digit4') forceMode = 4.0;
-    
-    if (event.code === 'Digit5') particleSizeVal = particleSizeVal > 0.1 ? 0.05 : 0.21;
-
-    if (event.code === 'KeyZ') autoRotateAxis = autoRotateAxis === 'z' ? null : 'z';
-    if (event.code === 'KeyX') autoRotateAxis = autoRotateAxis === 'x' ? null : 'x';
-    if (event.code === 'KeyY') autoRotateAxis = autoRotateAxis === 'y' ? null : 'y';
-    if (event.code === 'KeyC') autoRotateSpeed *= 1.5;
-    if (event.code === 'KeyV') autoRotateSpeed *= 0.66; 
-
-    if (event.code === 'ArrowUp') keys.up = true;
-    if (event.code === 'ArrowRight') keys.right = true;
-    if (event.code === 'ArrowLeft') keys.left = true;
-    if (event.code === 'ArrowDown') targetColorMode = targetColorMode === 0.0 ? 1.0 : 0.0;
-
-    if (event.code === 'Digit6') setFormation('line');
-    if (event.code === 'Digit7') setFormation('row');
-    if (event.code === 'Digit8') setFormation('grid');
-    if (event.code === 'Digit9') setFormation('triangle');
-    if (event.code === 'Digit0') setFormation('classic-grid');
-
-    if (event.code === 'KeyW') {
-      isDancing = !isDancing;
-      for (let i = 0; i < ROBOT_COUNT; i++) {
-        const actions = robotActions[i];
-        if (!actions || !actions.dance) continue;
-
-        if (isDancing) {
-          actions.dance.reset().play();
-          actions.walk.crossFadeTo(actions.dance, 0.2, true);
-        } else {
-          actions.walk.reset().play();
-          actions.dance.crossFadeTo(actions.walk, 0.2, true);
-        }
-      }
-    }
-
-    if (event.code === 'KeyH') {
-      uiVisible = !uiVisible;
-      slidersContainer.style.opacity = uiVisible ? '1' : '0';
-      slidersContainer.style.pointerEvents = uiVisible ? 'auto' : 'none';
-    }
-    
-    if (event.code === 'KeyF') {
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch((err) => console.log(err));
-      } else {
-        document.exitFullscreen().catch((err) => console.log(err));
-      }
-    }
-  });
-
-  addEventListener('keyup', (event) => {
-    if (event.code === 'ArrowUp') keys.up = false;
-    if (event.code === 'ArrowRight') keys.right = false;
-    if (event.code === 'ArrowLeft') keys.left = false;
-  });
-
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -503,30 +171,30 @@ async function main() {
     const delta = (currentTime - previousTime) / 1000;
     previousTime = currentTime;
 
-    if (keys.right) {
-      speedFactor += (4.0 - speedFactor) * 0.05; 
-      vibrationLevel += delta * 15.0; 
-    } else if (keys.left) {
-      speedFactor += (0.02 - speedFactor) * 0.1;
-      vibrationLevel += (0.0 - vibrationLevel) * 0.2;
+    if (params.keys.right) {
+      params.speedFactor += (4.0 - params.speedFactor) * 0.05; 
+      params.vibrationLevel += delta * 15.0; 
+    } else if (params.keys.left) {
+      params.speedFactor += (0.02 - params.speedFactor) * 0.1;
+      params.vibrationLevel += (0.0 - params.vibrationLevel) * 0.2;
     } else {
-      speedFactor += (1.0 - speedFactor) * 0.05;
-      vibrationLevel += (0.0 - vibrationLevel) * 0.2;
+      params.speedFactor += (1.0 - params.speedFactor) * 0.05;
+      params.vibrationLevel += (0.0 - params.vibrationLevel) * 0.2;
     }
 
-    pulseFactor += ((keys.up ? 1.0 : 0.0) - pulseFactor) * 0.1;
-    colorMode += (targetColorMode - colorMode) * 0.05;
+    params.pulseFactor += ((params.keys.up ? 1.0 : 0.0) - params.pulseFactor) * 0.1;
+    params.colorMode += (params.targetColorMode - params.colorMode) * 0.05;
 
-    uVibrationUniform.value = vibrationLevel;
+    uVibrationUniform.value = params.vibrationLevel;
     uFogTime.value = time;
-    uFogPulse.value = pulseFactor;
+    uFogPulse.value = params.pulseFactor;
 
     const baseFov = 50;
     const maxZoomFovDrop = 15; 
-    camera.fov = baseFov - (pulseFactor * maxZoomFovDrop);
+    camera.fov = baseFov - (params.pulseFactor * maxZoomFovDrop);
     camera.updateProjectionMatrix();
 
-    const bgIntensity = Math.min(pulseFactor * 0.4 + (vibrationLevel / 20.0), 1.0);
+    const bgIntensity = Math.min(params.pulseFactor * 0.4 + (params.vibrationLevel / 20.0), 1.0);
     const bgColor = new THREE.Color('#000000');
     const fireMid = new THREE.Color('#ffaa00');
     const fireHot = new THREE.Color('#ff0000');
@@ -542,8 +210,6 @@ async function main() {
     scene.background = bgColor;
     scene.fog.color = bgColor;
 
-    const dynamicRobotScale = robotScaleFactor * (1.0 + pulseFactor * 0.2); 
-
     for (let i = 0; i < particleLights.length; i++) {
       const light = particleLights[i];
       const phase = (i / particleLights.length) * Math.PI * 2;
@@ -553,35 +219,25 @@ async function main() {
       light.position.y = 5.0 + Math.sin(time * 0.7 + phase) * 5.0; 
       light.position.z = Math.sin(time * 0.35 + phase) * radius;
       
-      light.color.lerpColors(blueColors[i], redColors[i], colorMode);
+      light.color.lerpColors(blueColors[i], redColors[i], params.colorMode);
     }
 
     simulation.uTime.value = time;
-    simulation.uForceMode.value = forceMode;
-    simulation.uVibrationLevel.value = vibrationLevel;
-    simulation.uSpeedFactor.value = speedFactor;
-    simulation.uPulseFactor.value = pulseFactor;
-    simulation.uColorMode.value = colorMode;
-    simulation.uRepulsion.value = repulsionForce;
-    simulation.uParticleSize.value = particleSizeVal;
-    simulation.uBounds.value.copy(simBounds);
+    simulation.uForceMode.value = params.forceMode;
+    simulation.uVibrationLevel.value = params.vibrationLevel;
+    simulation.uSpeedFactor.value = params.speedFactor;
+    simulation.uPulseFactor.value = params.pulseFactor;
+    simulation.uColorMode.value = params.colorMode;
+    simulation.uRepulsion.value = params.repulsionForce;
+    simulation.uParticleSize.value = params.particleSizeVal;
+    simulation.uBounds.value.copy(params.simBounds);
     
     simulation.stepSimulation();
-    updateRobotMovement(delta * speedFactor);
-
-    for (let i = 0; i < robots.length; i++) {
-      if (robots[i].visible) {
-        robots[i].scale.setScalar(dynamicRobotScale);
-      }
-    }
-
-    for (const mixer of robotMixers) {
-      mixer.update(delta * speedFactor);
-    }
+    robotManager.update(delta * params.speedFactor);
     
-    if (autoRotateAxis) {
+    if (params.autoRotateAxis) {
       orbit.enabled = false; 
-      const angle = autoRotateSpeed * speedFactor; 
+      const angle = params.autoRotateSpeed * params.speedFactor; 
       
       const axisMap = {
         'x': new THREE.Vector3(1, 0, 0),
@@ -589,7 +245,7 @@ async function main() {
         'z': new THREE.Vector3(0, 0, 1)
       };
       
-      camera.position.applyAxisAngle(axisMap[autoRotateAxis], angle);
+      camera.position.applyAxisAngle(axisMap[params.autoRotateAxis], angle);
       camera.lookAt(0, 0, 0);
     } else {
       orbit.enabled = true; 
@@ -598,8 +254,8 @@ async function main() {
 
     // 🎥 CAMERA SHAKE
     const shakeOffset = new THREE.Vector3();
-    if (isDancing || vibrationLevel > 0.05 || pulseFactor > 0.05) {
-      const shakeIntensity = (isDancing ? 0.12 : 0.0) + vibrationLevel * 0.04 + pulseFactor * 0.15;
+    if (params.isDancing || params.vibrationLevel > 0.05 || params.pulseFactor > 0.05) {
+      const shakeIntensity = (params.isDancing ? 0.12 : 0.0) + params.vibrationLevel * 0.04 + params.pulseFactor * 0.15;
       shakeOffset.set(
         (Math.random() - 0.5) * shakeIntensity,
         (Math.random() - 0.5) * shakeIntensity,
