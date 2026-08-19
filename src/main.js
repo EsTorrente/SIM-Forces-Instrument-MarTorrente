@@ -7,6 +7,10 @@ import './styles.css';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
+// 🎛️ Post-Processing & TSL imports
+import { pass, uv, sin, cos, vec3, vec4, uniform, float, Fn } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+
 import { createParameters } from './simulation/parameters.js';
 import { createSimulation } from './simulation/createSimulation.js';
 
@@ -41,6 +45,7 @@ let colorMode = 0.0;
 let vibrationLevel = 0.0;
 let pulseFactor = 0.0;
 let speedFactor = 1.0; 
+let domainRepeatMode = 0.0; // 0: Disabled, 1: Kaleidoscope, 2: Grid Repeat
 
 // UI State
 let uiVisible = true;
@@ -122,6 +127,79 @@ async function main() {
   scene.add(ominousBottomLight);
   scene.add(ominousBottomLight.target);
 
+  // ============================================================
+  // 🌫️ VOLUMETRIC GROUND FOG PLANE (Factory Floor)
+  // ============================================================
+  const fogGeo = new THREE.PlaneGeometry(160, 160, 64, 64);
+  fogGeo.rotateX(-Math.PI / 2);
+
+  const uFogTime = uniform(0.0);
+  const uFogPulse = uniform(0.0);
+
+  const fogMat = new THREE.MeshBasicNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide
+  });
+
+  fogMat.colorNode = Fn(() => {
+    const st = uv().sub(0.5).mul(2.0);
+    const dist = st.length();
+    const radialFade = float(1.0).sub(dist).clamp(0.0, 1.0).pow(2.0);
+
+    const noiseCoords = uv().mul(12.0);
+    const wave1 = sin(noiseCoords.x.add(uFogTime.mul(0.6))).mul(cos(noiseCoords.y.sub(uFogTime.mul(0.4))));
+    const wave2 = sin(noiseCoords.x.mul(1.8).sub(uFogTime)).mul(sin(noiseCoords.y.mul(2.2).add(uFogTime.mul(0.8))));
+    const fogDensity = wave1.add(wave2).mul(0.25).add(0.5);
+
+    const baseRed = vec3(0.85, 0.05, 0.02).mul(fogDensity);
+    const glow = vec3(1.0, 0.25, 0.1).mul(uFogPulse.mul(1.2));
+
+    const finalColor = baseRed.add(glow);
+    const alpha = radialFade.mul(fogDensity).mul(0.55);
+
+    return vec4(finalColor, alpha);
+  })();
+
+  const groundFog = new THREE.Mesh(fogGeo, fogMat);
+  groundFog.position.y = -0.05;
+  scene.add(groundFog);
+
+  // ============================================================
+  // 🌟 POST-PROCESSING: BLOOM & CRT SCANLINES
+  // ============================================================
+  const postProcessing = new THREE.PostProcessing(renderer);
+  const scenePass = pass(scene, camera);
+
+  // 👈 Locked bloom permanently at 1.0
+  const uBloomStrength = uniform(1.0);
+  const uVibrationUniform = uniform(0.0);
+
+  // Bloom pass for glowing particle cores and robot rim-light
+  const bloomPass = bloom(scenePass, uBloomStrength, 0.5, 0.1);
+
+  // CRT Scanlines pass driven by vibration level
+  const scanlineCrtPass = Fn(() => {
+    const sceneColor = scenePass.add(bloomPass);
+    const screenUV = uv();
+
+    const scanlineIntensity = uVibrationUniform.mul(0.02).clamp(0.0, 0.4).add(0.2);
+    
+    // Horizontal Scanlines
+    const scanline = sin(screenUV.y.mul(innerHeight * 1.5))
+      .mul(0.12)
+      .mul(scanlineIntensity);
+
+    // Subtle CRT Vignette
+    const distFromCenter = screenUV.sub(0.5).length();
+    const vignette = distFromCenter.mul(0.35).pow(2.0);
+
+    return sceneColor.sub(scanline).sub(vignette);
+  })();
+
+  postProcessing.outputNode = scanlineCrtPass;
+
   const robotLoader = new GLTFLoader();
 
   robotLoader.load(
@@ -165,15 +243,13 @@ async function main() {
     setFormation('line');
   }
 
-  // 🚀 Epic Dynamic Formations utilizing the full Bounding Box
   function setFormation(formation) {
     currentFormation = formation;
     
-    // Reset defaults for all
     for (let i = 0; i < robots.length; i++) {
       robots[i].visible = true;
       robotTargets[i].set(0, 0, 0);
-      robotDirections[i] = 1; // 1: Positive Z, -1: Negative Z, 2: Circular, 3/-3: X-Axis
+      robotDirections[i] = 1; 
     }
 
     if (formation === 'line') {
@@ -212,7 +288,7 @@ async function main() {
         const radius = isInner ? simBounds.x * 0.2 : simBounds.x * 0.4;
         const angle = (i % count) / count * Math.PI * 2;
         robotTargets[i].set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-        robotDirections[i] = 2; // Circular
+        robotDirections[i] = 2; 
       }
     }
     else if (formation === 'triangle') {
@@ -226,7 +302,6 @@ async function main() {
       }
     }
     else if (formation === 'classic-grid') {
-      // 🚶‍♂️ Floating Stacked Grid (Mapped to Key 0)
       const cols = 10;
       const ROBOT_SPACING = 2.0;
       const ROW_SPACING = 2.0;
@@ -236,9 +311,7 @@ async function main() {
         const column = i % cols;
         const x = (column - 4.5) * ROBOT_SPACING * spacingMultiplier;
         const y = (row - 2) * ROW_SPACING * spacingMultiplier;
-        robotTargets[i].set(x, y, 0); // Stacked on Y, aligned on Z=0
-        
-        // 3 means walking Right (+X), -3 means walking Left (-X)
+        robotTargets[i].set(x, y, 0); 
         robotDirections[i] = row % 2 === 0 ? -3 : 3; 
       }
     }
@@ -265,7 +338,6 @@ async function main() {
       const dir = robotDirections[i];
 
       if (dir === 2) {
-        // Circular continuous marching
         const angleSpeed = baseRobotSpeed * delta * 0.2;
         const x = robot.position.x;
         const z = robot.position.z;
@@ -274,20 +346,14 @@ async function main() {
         
         robot.rotation.y = Math.atan2(robot.position.x, robot.position.z) + Math.PI / 2;
       } else if (Math.abs(dir) === 3) {
-        // X-Axis Left/Right Marching (for the 0 key stack)
         const sign = dir === 3 ? 1 : -1;
         robot.position.x += baseRobotSpeed * delta * sign;
-        
-        // Face the correct horizontal direction
         robot.rotation.y = sign === 1 ? Math.PI / 2 : -Math.PI / 2;
 
         if (robot.position.x > limitX) robot.position.x = -limitX;
         if (robot.position.x < -limitX) robot.position.x = limitX;
       } else {
-        // Standard linear marching with bounds wrap (Z-Axis)
         robot.position.z += baseRobotSpeed * delta * dir;
-        
-        // Flip the robot 180 degrees if they are walking backwards (-1)
         robot.rotation.y = dir === 1 ? 0 : Math.PI;
 
         if (robot.position.z > limitZ) robot.position.z = -limitZ;
@@ -308,12 +374,12 @@ async function main() {
     max-height: 90vh; overflow-y: auto; transition: opacity 0.3s ease;
   `;
 
-  // Instructions
   const instructions = document.createElement('div');
   instructions.innerHTML = `
     <strong style="color:#0ff; font-size:14px">CONTROLS</strong><br/>
     [1-4] Forces | [5] P.Size | [6-9, 0] Formations<br/>
-    [W] Dance Toggle | [Arrows] Chaos & Color<br/>
+    [W] Dance Toggle | [M] Domain Repeat (Datamosh)<br/>
+    [Arrows] Chaos & Color | [Z/X/Y] Auto-Cam<br/>
     <strong style="color:#ff0">[H] Hide UI | [F] Fullscreen</strong>
   `;
   instructions.style.marginBottom = '10px';
@@ -358,7 +424,6 @@ async function main() {
     }
   });
   
-  // 🔍 Zoom override for auto-rotate
   addEventListener('wheel', (event) => {
     if (autoRotateAxis) {
       const zoomSpeed = 0.001;
@@ -374,36 +439,37 @@ async function main() {
     if (event.repeat) return;
     if (event.code === 'KeyR') simulation.reset();
 
-    // 🌟 Simulation Modes
     if (event.code === 'Digit1') forceMode = 1.0;
     if (event.code === 'Digit2') forceMode = 2.0;
     if (event.code === 'Digit3') forceMode = 3.0;
     if (event.code === 'Digit4') forceMode = 4.0;
     
-    // 💥 Toggle Particle Size
     if (event.code === 'Digit5') {
       particleSizeVal = particleSizeVal > 0.1 ? 0.05 : 0.21;
     }
 
-    // 🎥 Camera Rotations
     if (event.code === 'KeyZ') autoRotateAxis = autoRotateAxis === 'z' ? null : 'z';
     if (event.code === 'KeyX') autoRotateAxis = autoRotateAxis === 'x' ? null : 'x';
     if (event.code === 'KeyY') autoRotateAxis = autoRotateAxis === 'y' ? null : 'y';
     if (event.code === 'KeyC') autoRotateSpeed *= 1.5;
     if (event.code === 'KeyV') autoRotateSpeed *= 0.66; 
 
-    // 🌈 Interactions
     if (event.code === 'ArrowUp') keys.up = true;
     if (event.code === 'ArrowRight') keys.right = true;
     if (event.code === 'ArrowLeft') keys.left = true;
     if (event.code === 'ArrowDown') targetColorMode = targetColorMode === 0.0 ? 1.0 : 0.0;
 
-    // 🤖 Robot formations
     if (event.code === 'Digit6') changeFormation('line');
     if (event.code === 'Digit7') changeFormation('row');
     if (event.code === 'Digit8') changeFormation('grid');
     if (event.code === 'Digit9') changeFormation('triangle');
-    if (event.code === 'Digit0') changeFormation('classic-grid'); // Fixed!
+    if (event.code === 'Digit0') changeFormation('classic-grid');
+
+    // 🌀 Datamosh Domain Repeat Toggle
+    if (event.code === 'KeyM') {
+      domainRepeatMode = (domainRepeatMode + 1) % 3;
+      simulation.uDomainRepeat.value = domainRepeatMode;
+    }
     
     // 🕺 Dance Toggle
     if (event.code === 'KeyW') {
@@ -422,7 +488,6 @@ async function main() {
       }
     }
 
-    // 📺 UI Display Toggles
     if (event.code === 'KeyH') {
       uiVisible = !uiVisible;
       slidersContainer.style.opacity = uiVisible ? '1' : '0';
@@ -463,7 +528,6 @@ async function main() {
     const delta = (currentTime - previousTime) / 1000;
     previousTime = currentTime;
 
-    // 🎹 "PLAYABLE" TIME & CHAOS LOGIC
     if (keys.right) {
       speedFactor += (4.0 - speedFactor) * 0.05; 
       vibrationLevel += delta * 15.0; 
@@ -478,25 +542,28 @@ async function main() {
     pulseFactor += ((keys.up ? 1.0 : 0.0) - pulseFactor) * 0.1;
     colorMode += (targetColorMode - colorMode) * 0.05;
 
-    // 🎥 Dynamic Cinematic Camera Zoom
+    // 👈 Removed the dynamic bloom adjustment. uBloomStrength is strictly handled in initialization now!
+    uVibrationUniform.value = vibrationLevel;
+
+    // Ground fog time & pulse updates
+    uFogTime.value = time;
+    uFogPulse.value = pulseFactor;
+
     const baseFov = 50;
     const maxZoomFovDrop = 15; 
     camera.fov = baseFov - (pulseFactor * maxZoomFovDrop);
     camera.updateProjectionMatrix();
 
-    // 🔥 Reactive Factory/Fire Background (Multi-Stage Color Interpolation)
     const bgIntensity = Math.min(pulseFactor * 0.4 + (vibrationLevel / 20.0), 1.0);
     const bgColor = new THREE.Color('#000000');
     
-    const fireMid = new THREE.Color('#ffaa00'); // Hot Yellow/Orange transition
-    const fireHot = new THREE.Color('#ff0000'); // Deep Crimson Red
+    const fireMid = new THREE.Color('#ffaa00');
+    const fireHot = new THREE.Color('#ff0000');
     
     if (bgIntensity < 0.15) {
-      // 0.0 -> 0.15 transitions Black to Yellow (Fast spike)
       const t = bgIntensity / 0.15; 
       bgColor.lerpColors(new THREE.Color('#000000'), fireMid, t);
     } else {
-      // 0.15 -> 1.0 transitions Yellow to Red (Long deep red hold)
       const t = (bgIntensity - 0.15) / 0.85; 
       bgColor.lerpColors(fireMid, fireHot, t);
     }
@@ -518,7 +585,6 @@ async function main() {
       light.color.lerpColors(blueColors[i], redColors[i], colorMode);
     }
 
-    // Sync GPU uniform updates
     simulation.uTime.value = time;
     simulation.uForceMode.value = forceMode;
     simulation.uVibrationLevel.value = vibrationLevel;
@@ -543,7 +609,6 @@ async function main() {
       mixer.update(delta * speedFactor);
     }
     
-    // 🎥 Camera Automation Management
     if (autoRotateAxis) {
       orbit.enabled = false; 
       const angle = autoRotateSpeed * speedFactor; 
@@ -560,8 +625,25 @@ async function main() {
       orbit.enabled = true; 
       orbit.update();
     }
-    
-    renderer.render(scene, camera);
+
+    // 🎥 CAMERA SHAKE IMPULSE (Dancing / Vibration / Pulse)
+    const shakeOffset = new THREE.Vector3();
+    if (isDancing || vibrationLevel > 0.05 || pulseFactor > 0.05) {
+      const shakeIntensity = (isDancing ? 0.12 : 0.0) + vibrationLevel * 0.04 + pulseFactor * 0.15;
+      shakeOffset.set(
+        (Math.random() - 0.5) * shakeIntensity,
+        (Math.random() - 0.5) * shakeIntensity,
+        (Math.random() - 0.5) * shakeIntensity
+      );
+    }
+
+    const savedCameraPos = camera.position.clone();
+    camera.position.add(shakeOffset);
+
+    // Post-processed render pass
+    postProcessing.render();
+
+    camera.position.copy(savedCameraPos);
   });
 }
 

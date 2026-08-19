@@ -16,6 +16,7 @@ import {
   vec4,
   sin,
   cos,
+  abs,
   uniform,
   uniformArray
 } from 'three/tsl';
@@ -32,8 +33,9 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
   const uPulseFactor = uniform(0.0);
   const uColorMode = uniform(0.0);
   const uRepulsion = uniform(350.0); 
+  const uDomainRepeat = uniform(0.0); // Datamosh / Kaleidoscope Domain Repeat Mode
   
-  // New Uniforms for UI Controls
+  // Uniforms for UI Controls
   const uBounds = uniform(new THREE.Vector3(20.0, 20.0, 20.0));
   const uParticleSize = uniform(0.05);
   const uSpeedFactor = uniform(1.0);
@@ -50,7 +52,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     const r5 = hash(i.add(uint(71)));
     const r6 = hash(i.add(uint(89)));
 
-    // Spread across the dynamic UI-driven bounds
     p.assign(vec3(r1, r2, r3).sub(0.5).mul(uBounds));
     v.assign(vec3(r4, r5, r6).sub(0.5).mul(params.initialSpeed));
   })().compute(count).setName('Initialize Particles');
@@ -59,7 +60,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     const p = positionBuffer.element(instanceIndex);
     const v = velocityBuffer.element(instanceIndex);
 
-    // Apply the playable speed factor directly to delta time
     const dt = params.dt.mul(params.timeScale).mul(uSpeedFactor);
     const force = vec3(0.0).toVar();
 
@@ -86,7 +86,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
       ));
 
     }).Else(() => { 
-      // 🎛️ Mode 4: Cylinder Spin / Core reactor (Default)
       const spin = vec3(p.z.mul(-1.0), p.y.mul(0.0), p.x).mul(1.5); 
       
       const radSq = p.x.mul(p.x).add(p.z.mul(p.z));
@@ -153,7 +152,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
 
     p.addAssign(v.mul(dt));
 
-    // Keep particles inside the dynamic UI bounds
     const half = uBounds.mul(0.5);
     p.assign(mod(p.add(half), uBounds).sub(half));
   })().compute(count).setName('Update Particles');
@@ -164,22 +162,48 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     transparent: true
   });
 
-  material.positionNode = positionBuffer.toAttribute();
-  
-  // Wire dynamic size slider to scale
+  // =====================================================
+  // 🌀 DATAMOSH DOMAIN REPEAT (Symmetrical Mirror / Mod)
+  // =====================================================
+  material.positionNode = Fn(() => {
+    const rawPos = positionBuffer.toAttribute();
+    const pos = rawPos.toVar();
+
+    If(uDomainRepeat.greaterThan(0.5), () => {
+      If(uDomainRepeat.greaterThan(1.5), () => {
+        // Mode 2: Grid Repeat using mod
+        const gridCell = vec3(8.0, 20.0, 8.0);
+        const halfCell = gridCell.mul(0.5);
+        pos.assign(vec3(
+          mod(abs(rawPos.x), gridCell.x).sub(halfCell.x),
+          rawPos.y,
+          mod(abs(rawPos.z), gridCell.z).sub(halfCell.z)
+        ));
+      }).Else(() => {
+        // Mode 1: 4-Way Symmetrical Kaleidoscope (abs mirror)
+        pos.assign(vec3(
+          abs(rawPos.x).sub(4.0),
+          rawPos.y,
+          abs(rawPos.z).sub(4.0)
+        ));
+      });
+    });
+
+    return pos;
+  })();
+
   material.scaleNode = uParticleSize.mul( uPulseFactor.mul(1.5).add(1.0) );
 
   material.colorNode = Fn(() => {
     const speed = velocityBuffer.toAttribute().length();
     const t = speed.div(params.maxSpeed).clamp(0.0, 1.0);
     
-    // 🔵 Techno Blues
     const slowColor = mix(color('#0011ff'), color('#ff0000'), uColorMode); 
     const fastColor = mix(color('#00ffff'), color('#ff1100'), uColorMode); 
     
     const baseColor = mix(slowColor, fastColor, t);
-    
     const brightnessBoost = uPulseFactor.mul(1.5);
+    
     return vec4(baseColor.xyz.add(vec3(1.0, 1.0, 1.0).mul(brightnessBoost)), 1.0);
   })();
 
@@ -212,6 +236,7 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     uPulseFactor,
     uColorMode,
     uRepulsion, 
+    uDomainRepeat,
     uBounds, 
     uParticleSize, 
     uSpeedFactor, 
