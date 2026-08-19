@@ -13,17 +13,31 @@ import {
   uint,
   uv,
   vec3,
-  vec4
+  vec4,
+  sin,
+  cos,
+  uniform,
+  uniformArray
 } from 'three/tsl';
 
-export function createSimulation({ renderer, scene, params, count = 131072 }) {
-  // STATE -----------------------------------------------------------------
-  // Each particle owns position and velocity. The arrays live in GPU storage.
+export function createSimulation({ renderer, scene, params, count = 131072, robotDataArray }) {
   const positionBuffer = instancedArray(count, 'vec3');
   const velocityBuffer = instancedArray(count, 'vec3');
+  
+  // Custom interactive uniforms mapped to JS
+  const uTime = uniform(0.0);
+  const uRobotData = uniformArray(robotDataArray);
+  const uForceMode = uniform(4.0);
+  const uVibrationLevel = uniform(0.0);
+  const uPulseFactor = uniform(0.0);
+  const uColorMode = uniform(0.0);
+  const uRepulsion = uniform(350.0); 
+  
+  // New Uniforms for UI Controls (Updated to 20x20x20 default)
+  const uBounds = uniform(new THREE.Vector3(20.0, 20.0, 20.0));
+  const uParticleSize = uniform(0.05);
+  const uSpeedFactor = uniform(1.0);
 
-  // INITIALIZATION --------------------------------------------------------
-  // A compute pass writes the initial state for every particle in parallel.
   const initParticles = Fn(() => {
     const i = instanceIndex;
     const p = positionBuffer.element(i);
@@ -36,43 +50,100 @@ export function createSimulation({ renderer, scene, params, count = 131072 }) {
     const r5 = hash(i.add(uint(71)));
     const r6 = hash(i.add(uint(89)));
 
-    p.assign(vec3(r1, r2, r3).sub(0.5).mul(params.boundsSize.mul(0.45)));
+    // Spread across the dynamic UI-driven bounds
+    p.assign(vec3(r1, r2, r3).sub(0.5).mul(uBounds));
     v.assign(vec3(r4, r5, r6).sub(0.5).mul(params.initialSpeed));
   })().compute(count).setName('Initialize Particles');
 
-  // UPDATE / COMPUTE SHADER ----------------------------------------------
-  // This is the conceptual heart of the project:
-  // state -> forces -> acceleration -> velocity -> position.
   const updateParticles = Fn(() => {
     const p = positionBuffer.element(instanceIndex);
     const v = velocityBuffer.element(instanceIndex);
 
-    const dt = params.dt.mul(params.timeScale);
+    // Apply the playable speed factor directly to delta time
+    const dt = params.dt.mul(params.timeScale).mul(uSpeedFactor);
     const force = vec3(0.0).toVar();
 
-    // 1) CONSTANT / WIND FORCE
-    force.addAssign(params.wind.mul(params.windEnabled));
+    // =====================================================
+    // 🌟 1. BASE FORCE MODES
+    // =====================================================
+    If(uForceMode.equal(1.0), () => { 
+      force.addAssign(vec3(
+        sin(p.y.mul(1.5)).mul(40.0),
+        cos(p.z.mul(1.5)).mul(40.0),
+        sin(p.x.mul(1.5)).mul(40.0)
+      ));
+      
+    }).ElseIf(uForceMode.equal(2.0), () => { 
+      const r = p.length();
+      const portal = sin(r.mul(0.8).sub(uTime.mul(6.0))).mul(60.0);
+      force.addAssign(p.normalize().mul(portal));
 
-    // 2) RADIAL FORCE (positive = attraction, negative = repulsion)
-    const toAttractor = params.attractor.sub(p);
-    const distance = max(toAttractor.length(), params.softening);
-    const radialDirection = toAttractor.div(distance);
-    const radialForce = radialDirection
-      .mul(params.radialStrength)
-      .div(distance.pow(2))
-      .mul(params.radialEnabled);
-    force.addAssign(radialForce);
+    }).ElseIf(uForceMode.equal(3.0), () => { 
+      force.addAssign(vec3(
+        sin(p.z.mul(0.5).add(uTime)).mul(50.0),
+        sin(p.x.mul(0.5).sub(uTime)).mul(50.0),
+        cos(p.y.mul(0.5).add(uTime)).mul(50.0)
+      ));
 
-    // 3) VORTEX FORCE: tangent to the radial direction around Z.
-    const zAxis = vec3(0.0, 0.0, 1.0);
-    const tangent = zAxis.cross(radialDirection);
-    force.addAssign(tangent.mul(params.vortexStrength).mul(params.vortexEnabled));
+    }).Else(() => { 
+      // 🎛️ Mode 4: Cylinder Spin / Core reactor (Default)
+      const spin = vec3(p.z.mul(-1.0), p.y.mul(0.0), p.x).mul(1.5); 
+      
+      const radSq = p.x.mul(p.x).add(p.z.mul(p.z));
+      const wave = sin(radSq.mul(0.01).sub(uTime.mul(5.0))).mul(25.0);
+      
+      const expand = vec3(p.x, p.y.mul(0.8), p.z).normalize().mul(wave);
+      
+      force.addAssign(spin.add(expand));
+    });
 
-    // 4) LINEAR DRAG: F = -c v
-    force.addAssign(v.mul(params.dragCoefficient).mul(params.dragEnabled).mul(-1.0));
+    // =====================================================
+    // 🤖 2. ROBOT POOLING FORCE (Attract far, repel close)
+    // =====================================================
+    for (let i = 0; i < 50; i++) {
+      const rData = uRobotData.element(i);
+      const rPos = rData.xyz;
+      const rActive = rData.w; 
 
-    // INTEGRATION ---------------------------------------------------------
-    // Unit mass: a = F. Semi-implicit Euler: update v, then p.
+      const toRobot = rPos.sub(p);
+      const dist = max(toRobot.length(), 0.1);
+      const dir = toRobot.div(dist);
+
+      const attractStr = 15.0; 
+      const repelStr = uRepulsion; 
+
+      const magnitude = rActive.mul(
+        dist.pow(-1.0).mul(attractStr).sub( dist.pow(-2.0).mul(repelStr) )
+      );
+
+      force.addAssign(dir.mul(magnitude));
+    }
+
+    // =====================================================
+    // 🧬 3. MICRO-TURBULENCE
+    // =====================================================
+    const microNoise = vec3(
+      sin(p.x.mul(5.0).add(p.y.mul(3.0))),
+      sin(p.y.mul(5.0).add(p.z.mul(3.0))),
+      sin(p.z.mul(5.0).add(p.x.mul(3.0)))
+    ).mul(10.0);
+    force.addAssign(microNoise);
+
+    // =====================================================
+    // 📳 4. ARROW-KEY VIBRATION
+    // =====================================================
+    const jitter = vec3(
+      sin(uTime.mul(150.0).add(p.x.mul(50.0))),
+      cos(uTime.mul(160.0).add(p.y.mul(50.0))),
+      sin(uTime.mul(170.0).add(p.z.mul(50.0)))
+    ).mul(uVibrationLevel).mul(30.0);
+    force.addAssign(jitter);
+
+    // =====================================================
+    // 🌀 5. STABILITY DAMPING
+    // =====================================================
+    force.addAssign(v.mul(-1.5)); 
+
     v.addAssign(force.mul(dt));
 
     const speed = v.length();
@@ -82,13 +153,11 @@ export function createSimulation({ renderer, scene, params, count = 131072 }) {
 
     p.addAssign(v.mul(dt));
 
-    // Periodic boundary conditions: particles leaving one side re-enter.
-    const half = params.boundsSize.mul(0.5);
-    p.assign(mod(p.add(half), params.boundsSize).sub(half));
+    // Keep particles inside the dynamic UI bounds
+    const half = uBounds.mul(0.5);
+    p.assign(mod(p.add(half), uBounds).sub(half));
   })().compute(count).setName('Update Particles');
 
-  // RENDER ---------------------------------------------------------------
-  // Rendering does not recompute the physics. It consumes the GPU state.
   const material = new THREE.SpriteNodeMaterial({
     blending: THREE.AdditiveBlending,
     depthWrite: false,
@@ -96,17 +165,24 @@ export function createSimulation({ renderer, scene, params, count = 131072 }) {
   });
 
   material.positionNode = positionBuffer.toAttribute();
-  material.scaleNode = params.particleSize;
+  
+  // Wire dynamic size slider to scale
+  material.scaleNode = uParticleSize.mul( uPulseFactor.mul(1.5).add(1.0) );
 
   material.colorNode = Fn(() => {
     const speed = velocityBuffer.toAttribute().length();
     const t = speed.div(params.maxSpeed).clamp(0.0, 1.0);
-    const slow = color('#46a6ff');
-    const fast = color('#ffb35a');
-    return vec4(mix(slow, fast, t), 1.0);
+    
+    // 🔵 Techno Blues
+    const slowColor = mix(color('#0011ff'), color('#ff0000'), uColorMode); 
+    const fastColor = mix(color('#00ffff'), color('#ff1100'), uColorMode); 
+    
+    const baseColor = mix(slowColor, fastColor, t);
+    
+    const brightnessBoost = uPulseFactor.mul(1.5);
+    return vec4(baseColor.xyz.add(vec3(1.0, 1.0, 1.0).mul(brightnessBoost)), 1.0);
   })();
 
-  // Circular sprite mask, avoiding visible square planes.
   material.opacityNode = step(uv().xy.sub(0.5).length(), 0.5);
 
   const geometry = new THREE.PlaneGeometry(1, 1);
@@ -130,6 +206,15 @@ export function createSimulation({ renderer, scene, params, count = 131072 }) {
 
   return {
     count,
+    uTime,
+    uForceMode,
+    uVibrationLevel,
+    uPulseFactor,
+    uColorMode,
+    uRepulsion, 
+    uBounds, 
+    uParticleSize, 
+    uSpeedFactor, 
     positionBuffer,
     velocityBuffer,
     reset,
