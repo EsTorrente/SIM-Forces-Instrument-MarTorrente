@@ -16,7 +16,6 @@ import {
   vec4,
   sin,
   cos,
-  abs,
   uniform,
   uniformArray
 } from 'three/tsl';
@@ -25,7 +24,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
   const positionBuffer = instancedArray(count, 'vec3');
   const velocityBuffer = instancedArray(count, 'vec3');
   
-  // Custom interactive uniforms mapped to JS
   const uTime = uniform(0.0);
   const uRobotData = uniformArray(robotDataArray);
   const uForceMode = uniform(4.0);
@@ -33,9 +31,7 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
   const uPulseFactor = uniform(0.0);
   const uColorMode = uniform(0.0);
   const uRepulsion = uniform(350.0); 
-  const uDomainRepeat = uniform(0.0); // Datamosh / Kaleidoscope Domain Repeat Mode
   
-  // Uniforms for UI Controls
   const uBounds = uniform(new THREE.Vector3(20.0, 20.0, 20.0));
   const uParticleSize = uniform(0.05);
   const uSpeedFactor = uniform(1.0);
@@ -63,42 +59,32 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     const dt = params.dt.mul(params.timeScale).mul(uSpeedFactor);
     const force = vec3(0.0).toVar();
 
-    // =====================================================
-    // 🌟 1. BASE FORCE MODES
-    // =====================================================
+    // 1. BASE FORCE MODES
     If(uForceMode.equal(1.0), () => { 
       force.addAssign(vec3(
         sin(p.y.mul(1.5)).mul(40.0),
         cos(p.z.mul(1.5)).mul(40.0),
         sin(p.x.mul(1.5)).mul(40.0)
       ));
-      
     }).ElseIf(uForceMode.equal(2.0), () => { 
       const r = p.length();
       const portal = sin(r.mul(0.8).sub(uTime.mul(6.0))).mul(60.0);
       force.addAssign(p.normalize().mul(portal));
-
     }).ElseIf(uForceMode.equal(3.0), () => { 
       force.addAssign(vec3(
         sin(p.z.mul(0.5).add(uTime)).mul(50.0),
         sin(p.x.mul(0.5).sub(uTime)).mul(50.0),
         cos(p.y.mul(0.5).add(uTime)).mul(50.0)
       ));
-
     }).Else(() => { 
       const spin = vec3(p.z.mul(-1.0), p.y.mul(0.0), p.x).mul(1.5); 
-      
       const radSq = p.x.mul(p.x).add(p.z.mul(p.z));
       const wave = sin(radSq.mul(0.01).sub(uTime.mul(5.0))).mul(25.0);
-      
       const expand = vec3(p.x, p.y.mul(0.8), p.z).normalize().mul(wave);
-      
       force.addAssign(spin.add(expand));
     });
 
-    // =====================================================
-    // 🤖 2. ROBOT POOLING FORCE (Attract far, repel close)
-    // =====================================================
+    // 2. ROBOT POOLING FORCE (Attract far, repel close)
     for (let i = 0; i < 50; i++) {
       const rData = uRobotData.element(i);
       const rPos = rData.xyz;
@@ -114,13 +100,10 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
       const magnitude = rActive.mul(
         dist.pow(-1.0).mul(attractStr).sub( dist.pow(-2.0).mul(repelStr) )
       );
-
       force.addAssign(dir.mul(magnitude));
     }
 
-    // =====================================================
-    // 🧬 3. MICRO-TURBULENCE
-    // =====================================================
+    // 3. MICRO-TURBULENCE
     const microNoise = vec3(
       sin(p.x.mul(5.0).add(p.y.mul(3.0))),
       sin(p.y.mul(5.0).add(p.z.mul(3.0))),
@@ -128,9 +111,7 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     ).mul(10.0);
     force.addAssign(microNoise);
 
-    // =====================================================
-    // 📳 4. ARROW-KEY VIBRATION
-    // =====================================================
+    // 4. VIBRATION
     const jitter = vec3(
       sin(uTime.mul(150.0).add(p.x.mul(50.0))),
       cos(uTime.mul(160.0).add(p.y.mul(50.0))),
@@ -138,11 +119,8 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     ).mul(uVibrationLevel).mul(30.0);
     force.addAssign(jitter);
 
-    // =====================================================
-    // 🌀 5. STABILITY DAMPING
-    // =====================================================
+    // 5. STABILITY DAMPING
     force.addAssign(v.mul(-1.5)); 
-
     v.addAssign(force.mul(dt));
 
     const speed = v.length();
@@ -162,36 +140,7 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     transparent: true
   });
 
-  // =====================================================
-  // 🌀 DATAMOSH DOMAIN REPEAT (Symmetrical Mirror / Mod)
-  // =====================================================
-  material.positionNode = Fn(() => {
-    const rawPos = positionBuffer.toAttribute();
-    const pos = rawPos.toVar();
-
-    If(uDomainRepeat.greaterThan(0.5), () => {
-      If(uDomainRepeat.greaterThan(1.5), () => {
-        // Mode 2: Grid Repeat using mod
-        const gridCell = vec3(8.0, 20.0, 8.0);
-        const halfCell = gridCell.mul(0.5);
-        pos.assign(vec3(
-          mod(abs(rawPos.x), gridCell.x).sub(halfCell.x),
-          rawPos.y,
-          mod(abs(rawPos.z), gridCell.z).sub(halfCell.z)
-        ));
-      }).Else(() => {
-        // Mode 1: 4-Way Symmetrical Kaleidoscope (abs mirror)
-        pos.assign(vec3(
-          abs(rawPos.x).sub(4.0),
-          rawPos.y,
-          abs(rawPos.z).sub(4.0)
-        ));
-      });
-    });
-
-    return pos;
-  })();
-
+  material.positionNode = positionBuffer.toAttribute();
   material.scaleNode = uParticleSize.mul( uPulseFactor.mul(1.5).add(1.0) );
 
   material.colorNode = Fn(() => {
@@ -236,7 +185,6 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
     uPulseFactor,
     uColorMode,
     uRepulsion, 
-    uDomainRepeat,
     uBounds, 
     uParticleSize, 
     uSpeedFactor, 

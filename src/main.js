@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import WebGPU from 'three/addons/capabilities/WebGPU.js';
 import './styles.css';
 
-// 🤖 ROBOT: imports
+// 🤖 ROBOT imports
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
@@ -45,15 +45,11 @@ let colorMode = 0.0;
 let vibrationLevel = 0.0;
 let pulseFactor = 0.0;
 let speedFactor = 1.0; 
-let domainRepeatMode = 0.0; // 0: Disabled, 1: Kaleidoscope, 2: Grid Repeat
 
-// UI State
+// UI & Camera State
 let uiVisible = true;
-
-// Camera Auto-Rotation State
 let autoRotateAxis = null; 
 let autoRotateSpeed = 0.01;
-
 const keys = { up: false, right: false, left: false };
 
 async function main() {
@@ -93,7 +89,7 @@ async function main() {
   });
 
   // ============================================================
-  // 💡 PARTICLE LIGHTS
+  // 💡 LIGHTING
   // ============================================================
   const LIGHT_COUNT = 8;
   const particleLights = [];
@@ -115,9 +111,6 @@ async function main() {
     particleLights.push(light);
   }
 
-  // ============================================================
-  // 🤖 ROBOTS & OMINOUS LIGHTING
-  // ============================================================
   const ambientLight = new THREE.HemisphereLight(0x112233, 0x000000, 0.3);
   scene.add(ambientLight);
 
@@ -128,7 +121,7 @@ async function main() {
   scene.add(ominousBottomLight.target);
 
   // ============================================================
-  // 🌫️ VOLUMETRIC GROUND FOG PLANE (Factory Floor)
+  // 🌫️ VOLUMETRIC GROUND FOG PLANE
   // ============================================================
   const fogGeo = new THREE.PlaneGeometry(160, 160, 64, 64);
   fogGeo.rotateX(-Math.PI / 2);
@@ -172,26 +165,20 @@ async function main() {
   const postProcessing = new THREE.PostProcessing(renderer);
   const scenePass = pass(scene, camera);
 
-  // 👈 Locked bloom permanently at 1.0
   const uBloomStrength = uniform(1.0);
   const uVibrationUniform = uniform(0.0);
 
-  // Bloom pass for glowing particle cores and robot rim-light
   const bloomPass = bloom(scenePass, uBloomStrength, 0.5, 0.1);
 
-  // CRT Scanlines pass driven by vibration level
   const scanlineCrtPass = Fn(() => {
     const sceneColor = scenePass.add(bloomPass);
     const screenUV = uv();
 
     const scanlineIntensity = uVibrationUniform.mul(0.02).clamp(0.0, 0.4).add(0.2);
-    
-    // Horizontal Scanlines
     const scanline = sin(screenUV.y.mul(innerHeight * 1.5))
       .mul(0.12)
       .mul(scanlineIntensity);
 
-    // Subtle CRT Vignette
     const distFromCenter = screenUV.sub(0.5).length();
     const vignette = distFromCenter.mul(0.35).pow(2.0);
 
@@ -200,6 +187,9 @@ async function main() {
 
   postProcessing.outputNode = scanlineCrtPass;
 
+  // ============================================================
+  // 🤖 ROBOT SETUP
+  // ============================================================
   const robotLoader = new GLTFLoader();
 
   robotLoader.load(
@@ -321,10 +311,6 @@ async function main() {
     }
   }
 
-  function changeFormation(formation) {
-    setFormation(formation);
-  }
-
   function updateRobotMovement(delta) {
     const limitX = simBounds.x * 0.5;
     const limitZ = simBounds.z * 0.5;
@@ -343,7 +329,6 @@ async function main() {
         const z = robot.position.z;
         robot.position.x = x * Math.cos(angleSpeed) - z * Math.sin(angleSpeed);
         robot.position.z = x * Math.sin(angleSpeed) + z * Math.cos(angleSpeed);
-        
         robot.rotation.y = Math.atan2(robot.position.x, robot.position.z) + Math.PI / 2;
       } else if (Math.abs(dir) === 3) {
         const sign = dir === 3 ? 1 : -1;
@@ -363,7 +348,7 @@ async function main() {
   }
 
   // ============================================================
-  // 🎛️ UI: SLIDERS & INFO
+  // 🎛️ UI & EVENTS
   // ============================================================
   const slidersContainer = document.createElement('div');
   slidersContainer.style.cssText = `
@@ -378,9 +363,8 @@ async function main() {
   instructions.innerHTML = `
     <strong style="color:#0ff; font-size:14px">CONTROLS</strong><br/>
     [1-4] Forces | [5] P.Size | [6-9, 0] Formations<br/>
-    [W] Dance Toggle | [M] Domain Repeat (Datamosh)<br/>
-    [Arrows] Chaos & Color | [Z/X/Y] Auto-Cam<br/>
-    <strong style="color:#ff0">[H] Hide UI | [F] Fullscreen</strong>
+    [W] Dance Toggle | [Arrows] Chaos & Color<br/>
+    [Z/X/Y] Auto-Cam | <strong style="color:#ff0">[H] Hide UI | [F] Fullscreen</strong>
   `;
   instructions.style.marginBottom = '10px';
   instructions.style.lineHeight = '1.4';
@@ -413,7 +397,6 @@ async function main() {
 
   document.body.appendChild(slidersContainer);
 
-  // KEYBOARD AND MOUSE INTERACTIONS -------------------------------------
   addEventListener('mousemove', (event) => {
     const mouseY = 1.0 - (event.clientY / innerHeight);
     repulsionForce = mouseY * 1500.0; 
@@ -437,6 +420,7 @@ async function main() {
 
   addEventListener('keydown', (event) => {
     if (event.repeat) return;
+    
     if (event.code === 'KeyR') simulation.reset();
 
     if (event.code === 'Digit1') forceMode = 1.0;
@@ -444,9 +428,7 @@ async function main() {
     if (event.code === 'Digit3') forceMode = 3.0;
     if (event.code === 'Digit4') forceMode = 4.0;
     
-    if (event.code === 'Digit5') {
-      particleSizeVal = particleSizeVal > 0.1 ? 0.05 : 0.21;
-    }
+    if (event.code === 'Digit5') particleSizeVal = particleSizeVal > 0.1 ? 0.05 : 0.21;
 
     if (event.code === 'KeyZ') autoRotateAxis = autoRotateAxis === 'z' ? null : 'z';
     if (event.code === 'KeyX') autoRotateAxis = autoRotateAxis === 'x' ? null : 'x';
@@ -459,19 +441,12 @@ async function main() {
     if (event.code === 'ArrowLeft') keys.left = true;
     if (event.code === 'ArrowDown') targetColorMode = targetColorMode === 0.0 ? 1.0 : 0.0;
 
-    if (event.code === 'Digit6') changeFormation('line');
-    if (event.code === 'Digit7') changeFormation('row');
-    if (event.code === 'Digit8') changeFormation('grid');
-    if (event.code === 'Digit9') changeFormation('triangle');
-    if (event.code === 'Digit0') changeFormation('classic-grid');
+    if (event.code === 'Digit6') setFormation('line');
+    if (event.code === 'Digit7') setFormation('row');
+    if (event.code === 'Digit8') setFormation('grid');
+    if (event.code === 'Digit9') setFormation('triangle');
+    if (event.code === 'Digit0') setFormation('classic-grid');
 
-    // 🌀 Datamosh Domain Repeat Toggle
-    if (event.code === 'KeyM') {
-      domainRepeatMode = (domainRepeatMode + 1) % 3;
-      simulation.uDomainRepeat.value = domainRepeatMode;
-    }
-    
-    // 🕺 Dance Toggle
     if (event.code === 'KeyW') {
       isDancing = !isDancing;
       for (let i = 0; i < ROBOT_COUNT; i++) {
@@ -542,10 +517,7 @@ async function main() {
     pulseFactor += ((keys.up ? 1.0 : 0.0) - pulseFactor) * 0.1;
     colorMode += (targetColorMode - colorMode) * 0.05;
 
-    // 👈 Removed the dynamic bloom adjustment. uBloomStrength is strictly handled in initialization now!
     uVibrationUniform.value = vibrationLevel;
-
-    // Ground fog time & pulse updates
     uFogTime.value = time;
     uFogPulse.value = pulseFactor;
 
@@ -556,7 +528,6 @@ async function main() {
 
     const bgIntensity = Math.min(pulseFactor * 0.4 + (vibrationLevel / 20.0), 1.0);
     const bgColor = new THREE.Color('#000000');
-    
     const fireMid = new THREE.Color('#ffaa00');
     const fireHot = new THREE.Color('#ff0000');
     
@@ -596,7 +567,6 @@ async function main() {
     simulation.uBounds.value.copy(simBounds);
     
     simulation.stepSimulation();
-    
     updateRobotMovement(delta * speedFactor);
 
     for (let i = 0; i < robots.length; i++) {
@@ -626,7 +596,7 @@ async function main() {
       orbit.update();
     }
 
-    // 🎥 CAMERA SHAKE IMPULSE (Dancing / Vibration / Pulse)
+    // 🎥 CAMERA SHAKE
     const shakeOffset = new THREE.Vector3();
     if (isDancing || vibrationLevel > 0.05 || pulseFactor > 0.05) {
       const shakeIntensity = (isDancing ? 0.12 : 0.0) + vibrationLevel * 0.04 + pulseFactor * 0.15;
@@ -640,13 +610,9 @@ async function main() {
     const savedCameraPos = camera.position.clone();
     camera.position.add(shakeOffset);
 
-    // Post-processed render pass
     postProcessing.render();
-
     camera.position.copy(savedCameraPos);
   });
 }
 
-main().catch((error) => {
-  console.error(error);
-});
+main().catch((error) => console.error(error));
