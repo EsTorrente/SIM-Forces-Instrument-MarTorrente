@@ -13,10 +13,6 @@ import { createSimulation } from './simulation/createSimulation.js';
 const PARTICLE_COUNT = 262144;
 const ROBOT_COUNT = 50;
 
-const ROBOTS_PER_ROW = 10;
-const ROW_SPACING = 1.2;
-const ROBOT_SPACING = 0.8;
-
 let robotModel;
 let robotAnimations = [];
 let robots = [];
@@ -45,6 +41,9 @@ let colorMode = 0.0;
 let vibrationLevel = 0.0;
 let pulseFactor = 0.0;
 let speedFactor = 1.0; 
+
+// UI State
+let uiVisible = true;
 
 // Camera Auto-Rotation State
 let autoRotateAxis = null; 
@@ -112,10 +111,16 @@ async function main() {
   }
 
   // ============================================================
-  // 🤖 ROBOTS
+  // 🤖 ROBOTS & OMINOUS LIGHTING
   // ============================================================
-  const ambientLight = new THREE.HemisphereLight(0x223344, 0x000000, 1.5);
+  const ambientLight = new THREE.HemisphereLight(0x112233, 0x000000, 0.3);
   scene.add(ambientLight);
+
+  const ominousBottomLight = new THREE.DirectionalLight(0xff0000, 30.0);
+  ominousBottomLight.position.set(0, -20, 0);
+  ominousBottomLight.target.position.set(0, 0, 0);
+  scene.add(ominousBottomLight);
+  scene.add(ominousBottomLight.target);
 
   const robotLoader = new GLTFLoader();
 
@@ -160,67 +165,90 @@ async function main() {
     setFormation('line');
   }
 
+  // 🚀 Epic Dynamic Formations utilizing the full Bounding Box
   function setFormation(formation) {
     currentFormation = formation;
     
+    // Reset defaults for all
     for (let i = 0; i < robots.length; i++) {
       robots[i].visible = true;
       robotTargets[i].set(0, 0, 0);
-      robotDirections[i] = 1;
+      robotDirections[i] = 1; // 1: Positive Z, -1: Negative Z, 2: Circular, 3/-3: X-Axis
     }
 
     if (formation === 'line') {
-      for (let i = 0; i < 5; i++) {
-        robotTargets[i].set(0, 0, (i - 2) * ROBOT_SPACING * spacingMultiplier);
+      const maxRank = Math.ceil(ROBOT_COUNT / 2);
+      const spreadX = (simBounds.x * 0.45) / maxRank;
+      const spreadZ = (simBounds.z * 0.45) / maxRank;
+      
+      for (let i = 0; i < ROBOT_COUNT; i++) {
+        if (i === 0) {
+          robotTargets[i].set(0, 0, simBounds.z * 0.4);
+        } else {
+          const side = i % 2 === 0 ? 1 : -1;
+          const rank = Math.floor((i + 1) / 2);
+          robotTargets[i].set(side * rank * spreadX, 0, simBounds.z * 0.4 - rank * spreadZ);
+        }
       }
-      for (let i = 5; i < ROBOT_COUNT; i++) robots[i].visible = false;
     }
     else if (formation === 'row') {
-      for (let i = 0; i < 5; i++) {
-        robotTargets[i].set((i - 2) * ROBOT_SPACING * spacingMultiplier, 0, 0);
+      const cols = 10;
+      const rows = 5;
+      const spacingX = (simBounds.x * 0.8) / cols;
+      const spacingZ = (simBounds.z * 0.8) / rows;
+      
+      for (let i = 0; i < ROBOT_COUNT; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const x = (col - (cols - 1) / 2) * spacingX;
+        const z = (row - (rows - 1) / 2) * spacingZ;
+        robotTargets[i].set(x, 0, z);
       }
-      for (let i = 5; i < ROBOT_COUNT; i++) robots[i].visible = false;
     }
     else if (formation === 'grid') {
+      for (let i = 0; i < ROBOT_COUNT; i++) {
+        const isInner = i < 15;
+        const count = isInner ? 15 : 35;
+        const radius = isInner ? simBounds.x * 0.2 : simBounds.x * 0.4;
+        const angle = (i % count) / count * Math.PI * 2;
+        robotTargets[i].set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+        robotDirections[i] = 2; // Circular
+      }
+    }
+    else if (formation === 'triangle') {
+      for (let i = 0; i < ROBOT_COUNT; i++) {
+        const leg = i % 4; 
+        const rank = Math.floor(i / 4) + 1;
+        const maxRanks = Math.ceil(ROBOT_COUNT / 4);
+        const dist = (rank / maxRanks) * (simBounds.x * 0.45);
+        const angle = leg * (Math.PI / 2) + Math.PI / 4;
+        robotTargets[i].set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+      }
+    }
+    else if (formation === 'classic-grid') {
+      // 🚶‍♂️ Floating Stacked Grid (Mapped to Key 0)
       const cols = 10;
+      const ROBOT_SPACING = 2.0;
+      const ROW_SPACING = 2.0;
+
       for (let i = 0; i < ROBOT_COUNT; i++) {
         const row = Math.floor(i / cols);
         const column = i % cols;
         const x = (column - 4.5) * ROBOT_SPACING * spacingMultiplier;
-        const y = (row - 2) * ROW_SPACING * spacingMultiplier; 
-        robotTargets[i].set(x, y, 0);
-        robotDirections[i] = row % 2 === 0 ? 1 : -1;
+        const y = (row - 2) * ROW_SPACING * spacingMultiplier;
+        robotTargets[i].set(x, y, 0); // Stacked on Y, aligned on Z=0
+        
+        // 3 means walking Right (+X), -3 means walking Left (-X)
+        robotDirections[i] = row % 2 === 0 ? -3 : 3; 
       }
-    }
-    else if (formation === 'triangle') {
-      let index = 0;
-      const rows = 9;
-      for (let row = 0; row < rows; row++) {
-        const robotsInRow = row + 1;
-        const z = (row - (rows - 1) / 2) * ROW_SPACING * spacingMultiplier;
-        for (let column = 0; column < robotsInRow; column++) {
-          if (index >= ROBOT_COUNT) break;
-          const x = (column - (robotsInRow - 1) / 2) * ROBOT_SPACING * spacingMultiplier;
-          robotTargets[index].set(x, 0, z);
-          index++;
-        }
-      }
-      for (let i = index; i < ROBOT_COUNT; i++) robots[i].visible = false;
     }
 
     for (let i = 0; i < robots.length; i++) {
       robots[i].position.copy(robotTargets[i]);
-      if (currentFormation === 'grid') {
-        robots[i].rotation.y = robotDirections[i] === 1 ? Math.PI / 2 : -Math.PI / 2;
-      } else {
-        robots[i].rotation.y = 0; 
-      }
     }
   }
 
   function changeFormation(formation) {
-    robotScaleFactor = 0.5;
-    spacingMultiplier = 2.7;
     setFormation(formation);
   }
 
@@ -234,31 +262,63 @@ async function main() {
       
       if (!robot.visible) continue;
       
-      const direction = robotDirections[i];
-      if (currentFormation === 'grid') {
-        robot.position.x += direction * baseRobotSpeed * delta;
-      } else {
-        robot.position.z += baseRobotSpeed * delta;
-      }
+      const dir = robotDirections[i];
 
-      if (robot.position.x > limitX) robot.position.x = -limitX;
-      if (robot.position.x < -limitX) robot.position.x = limitX;
-      if (robot.position.z > limitZ) robot.position.z = -limitZ;
-      if (robot.position.z < -limitZ) robot.position.z = limitZ;
+      if (dir === 2) {
+        // Circular continuous marching
+        const angleSpeed = baseRobotSpeed * delta * 0.2;
+        const x = robot.position.x;
+        const z = robot.position.z;
+        robot.position.x = x * Math.cos(angleSpeed) - z * Math.sin(angleSpeed);
+        robot.position.z = x * Math.sin(angleSpeed) + z * Math.cos(angleSpeed);
+        
+        robot.rotation.y = Math.atan2(robot.position.x, robot.position.z) + Math.PI / 2;
+      } else if (Math.abs(dir) === 3) {
+        // X-Axis Left/Right Marching (for the 0 key stack)
+        const sign = dir === 3 ? 1 : -1;
+        robot.position.x += baseRobotSpeed * delta * sign;
+        
+        // Face the correct horizontal direction
+        robot.rotation.y = sign === 1 ? Math.PI / 2 : -Math.PI / 2;
+
+        if (robot.position.x > limitX) robot.position.x = -limitX;
+        if (robot.position.x < -limitX) robot.position.x = limitX;
+      } else {
+        // Standard linear marching with bounds wrap (Z-Axis)
+        robot.position.z += baseRobotSpeed * delta * dir;
+        
+        // Flip the robot 180 degrees if they are walking backwards (-1)
+        robot.rotation.y = dir === 1 ? 0 : Math.PI;
+
+        if (robot.position.z > limitZ) robot.position.z = -limitZ;
+        if (robot.position.z < -limitZ) robot.position.z = limitZ;
+      }
     }
   }
 
   // ============================================================
-  // 🎛️ UI: SLIDERS
+  // 🎛️ UI: SLIDERS & INFO
   // ============================================================
   const slidersContainer = document.createElement('div');
   slidersContainer.style.cssText = `
-    position: fixed; top: 80px; left: 20px; z-index: 100;
+    position: fixed; top: 20px; left: 20px; z-index: 100;
     color: #fff; background: rgba(10, 10, 15, 0.85); padding: 15px 20px;
     border-radius: 8px; font-family: monospace; font-size: 12px;
     display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(0,255,255,0.2);
-    max-height: 80vh; overflow-y: auto;
+    max-height: 90vh; overflow-y: auto; transition: opacity 0.3s ease;
   `;
+
+  // Instructions
+  const instructions = document.createElement('div');
+  instructions.innerHTML = `
+    <strong style="color:#0ff; font-size:14px">CONTROLS</strong><br/>
+    [1-4] Forces | [5] P.Size | [6-9, 0] Formations<br/>
+    [W] Dance Toggle | [Arrows] Chaos & Color<br/>
+    <strong style="color:#ff0">[H] Hide UI | [F] Fullscreen</strong>
+  `;
+  instructions.style.marginBottom = '10px';
+  instructions.style.lineHeight = '1.4';
+  slidersContainer.appendChild(instructions);
 
   function createSlider(labelTxt, min, max, step, initial, onChange) {
     const container = document.createElement('div');
@@ -277,15 +337,13 @@ async function main() {
     return slider;
   }
 
-  createSlider('Robot Spacing', '0.2', '3.0', '0.1', '2.7', (v) => { spacingMultiplier = v; setFormation(currentFormation); });
   createSlider('Robot Scale', '0.1', '2.0', '0.1', '0.5', (v) => { robotScaleFactor = v; robots.forEach(r => r.scale.setScalar(robotScaleFactor)); });
   const repSlider = createSlider('Repulsion Force', '0', '1500', '10', '350', (v) => { repulsionForce = v; });
-  
   createSlider('Particle Size', '0.01', '0.5', '0.01', '0.05', (v) => { particleSizeVal = v; });
   
-  createSlider('Bounds X', '20', '300', '10', '20', (v) => { simBounds.x = v; });
+  createSlider('Bounds X', '20', '300', '10', '20', (v) => { simBounds.x = v; setFormation(currentFormation); });
   createSlider('Bounds Y', '20', '300', '10', '20', (v) => { simBounds.y = v; });
-  createSlider('Bounds Z', '20', '300', '10', '20', (v) => { simBounds.z = v; });
+  createSlider('Bounds Z', '20', '300', '10', '20', (v) => { simBounds.z = v; setFormation(currentFormation); });
 
   document.body.appendChild(slidersContainer);
 
@@ -294,17 +352,17 @@ async function main() {
     const mouseY = 1.0 - (event.clientY / innerHeight);
     repulsionForce = mouseY * 1500.0; 
     
-    repSlider.value = repulsionForce;
-    repSlider.previousElementSibling.querySelector('span').innerText = repulsionForce.toFixed(0);
+    if(repSlider) {
+      repSlider.value = repulsionForce;
+      repSlider.previousElementSibling.querySelector('span').innerText = repulsionForce.toFixed(0);
+    }
   });
   
-  // 🔍 Add manual zoom override for when auto-rotate has OrbitControls disabled
+  // 🔍 Zoom override for auto-rotate
   addEventListener('wheel', (event) => {
     if (autoRotateAxis) {
       const zoomSpeed = 0.001;
       const factor = 1.0 + (event.deltaY * zoomSpeed);
-      
-      // Clamp the distance so it doesn't invert through the core or go to space
       const newRadius = camera.position.length() * factor;
       if (newRadius > 2.0 && newRadius < 200.0) {
         camera.position.multiplyScalar(factor);
@@ -345,7 +403,9 @@ async function main() {
     if (event.code === 'Digit7') changeFormation('row');
     if (event.code === 'Digit8') changeFormation('grid');
     if (event.code === 'Digit9') changeFormation('triangle');
+    if (event.code === 'Digit0') changeFormation('classic-grid'); // Fixed!
     
+    // 🕺 Dance Toggle
     if (event.code === 'KeyW') {
       isDancing = !isDancing;
       for (let i = 0; i < ROBOT_COUNT; i++) {
@@ -359,6 +419,21 @@ async function main() {
           actions.walk.reset().play();
           actions.dance.crossFadeTo(actions.walk, 0.2, true);
         }
+      }
+    }
+
+    // 📺 UI Display Toggles
+    if (event.code === 'KeyH') {
+      uiVisible = !uiVisible;
+      slidersContainer.style.opacity = uiVisible ? '1' : '0';
+      slidersContainer.style.pointerEvents = uiVisible ? 'auto' : 'none';
+    }
+    
+    if (event.code === 'KeyF') {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch((err) => console.log(err));
+      } else {
+        document.exitFullscreen().catch((err) => console.log(err));
       }
     }
   });
@@ -403,15 +478,29 @@ async function main() {
     pulseFactor += ((keys.up ? 1.0 : 0.0) - pulseFactor) * 0.1;
     colorMode += (targetColorMode - colorMode) * 0.05;
 
-    // 🔥 Reactive Factory/Fire Background
+    // 🎥 Dynamic Cinematic Camera Zoom
+    const baseFov = 50;
+    const maxZoomFovDrop = 15; 
+    camera.fov = baseFov - (pulseFactor * maxZoomFovDrop);
+    camera.updateProjectionMatrix();
+
+    // 🔥 Reactive Factory/Fire Background (Multi-Stage Color Interpolation)
     const bgIntensity = Math.min(pulseFactor * 0.4 + (vibrationLevel / 20.0), 1.0);
-    const fireBase = new THREE.Color('#220500'); 
-    const fireHot = new THREE.Color('#ff3300');  
-    
     const bgColor = new THREE.Color('#000000');
-    bgColor.lerp(fireBase, bgIntensity);
-    bgColor.lerp(fireHot, bgIntensity * bgIntensity); 
     
+    const fireMid = new THREE.Color('#ffaa00'); // Hot Yellow/Orange transition
+    const fireHot = new THREE.Color('#ff0000'); // Deep Crimson Red
+    
+    if (bgIntensity < 0.15) {
+      // 0.0 -> 0.15 transitions Black to Yellow (Fast spike)
+      const t = bgIntensity / 0.15; 
+      bgColor.lerpColors(new THREE.Color('#000000'), fireMid, t);
+    } else {
+      // 0.15 -> 1.0 transitions Yellow to Red (Long deep red hold)
+      const t = (bgIntensity - 0.15) / 0.85; 
+      bgColor.lerpColors(fireMid, fireHot, t);
+    }
+
     scene.background = bgColor;
     scene.fog.color = bgColor;
 

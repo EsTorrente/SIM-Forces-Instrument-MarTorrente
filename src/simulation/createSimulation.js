@@ -33,7 +33,7 @@ export function createSimulation({ renderer, scene, params, count = 131072, robo
   const uColorMode = uniform(0.0);
   const uRepulsion = uniform(350.0); 
   
-  // New Uniforms for UI Controls (Updated to 20x20x20 default)
+  // New Uniforms for UI Controls
   const uBounds = uniform(new THREE.Vector3(20.0, 20.0, 20.0));
   const uParticleSize = uniform(0.05);
   const uSpeedFactor = uniform(1.0);
