@@ -30,7 +30,6 @@ let baseRobotSpeed = 0.8;
 let isDancing = false;
 let repulsionForce = 350.0;
 let particleSizeVal = 0.05;
-// Default to 20x20x20
 let simBounds = new THREE.Vector3(20.0, 20.0, 20.0);
 
 let currentFormation = 'line';
@@ -48,7 +47,7 @@ let pulseFactor = 0.0;
 let speedFactor = 1.0; 
 
 // Camera Auto-Rotation State
-let autoRotateAxis = null; // 'x', 'y', 'z', or null
+let autoRotateAxis = null; 
 let autoRotateSpeed = 0.01;
 
 const keys = { up: false, right: false, left: false };
@@ -284,7 +283,6 @@ async function main() {
   
   createSlider('Particle Size', '0.01', '0.5', '0.01', '0.05', (v) => { particleSizeVal = v; });
   
-  // Update Bounds UI Defaults to 20
   createSlider('Bounds X', '20', '300', '10', '20', (v) => { simBounds.x = v; });
   createSlider('Bounds Y', '20', '300', '10', '20', (v) => { simBounds.y = v; });
   createSlider('Bounds Z', '20', '300', '10', '20', (v) => { simBounds.z = v; });
@@ -293,20 +291,32 @@ async function main() {
 
   // KEYBOARD AND MOUSE INTERACTIONS -------------------------------------
   addEventListener('mousemove', (event) => {
-    // Map mouse Y (top of screen is 1.0, bottom is 0.0) to repulsion force
     const mouseY = 1.0 - (event.clientY / innerHeight);
     repulsionForce = mouseY * 1500.0; 
     
-    // Update the slider UI visually
     repSlider.value = repulsionForce;
     repSlider.previousElementSibling.querySelector('span').innerText = repulsionForce.toFixed(0);
   });
+  
+  // 🔍 Add manual zoom override for when auto-rotate has OrbitControls disabled
+  addEventListener('wheel', (event) => {
+    if (autoRotateAxis) {
+      const zoomSpeed = 0.001;
+      const factor = 1.0 + (event.deltaY * zoomSpeed);
+      
+      // Clamp the distance so it doesn't invert through the core or go to space
+      const newRadius = camera.position.length() * factor;
+      if (newRadius > 2.0 && newRadius < 200.0) {
+        camera.position.multiplyScalar(factor);
+      }
+    }
+  }, { passive: true });
 
   addEventListener('keydown', (event) => {
     if (event.repeat) return;
     if (event.code === 'KeyR') simulation.reset();
 
-    // 🌟 Simulation Modes (1-4, 5 removed from forces)
+    // 🌟 Simulation Modes
     if (event.code === 'Digit1') forceMode = 1.0;
     if (event.code === 'Digit2') forceMode = 2.0;
     if (event.code === 'Digit3') forceMode = 3.0;
@@ -322,7 +332,7 @@ async function main() {
     if (event.code === 'KeyX') autoRotateAxis = autoRotateAxis === 'x' ? null : 'x';
     if (event.code === 'KeyY') autoRotateAxis = autoRotateAxis === 'y' ? null : 'y';
     if (event.code === 'KeyC') autoRotateSpeed *= 1.5;
-    if (event.code === 'KeyV') autoRotateSpeed *= 0.66; // slow down
+    if (event.code === 'KeyV') autoRotateSpeed *= 0.66; 
 
     // 🌈 Interactions
     if (event.code === 'ArrowUp') keys.up = true;
@@ -394,14 +404,13 @@ async function main() {
     colorMode += (targetColorMode - colorMode) * 0.05;
 
     // 🔥 Reactive Factory/Fire Background
-    // Calculate intensity based on interaction modifiers
     const bgIntensity = Math.min(pulseFactor * 0.4 + (vibrationLevel / 20.0), 1.0);
-    const fireBase = new THREE.Color('#220500'); // Deep smoldering factory red
-    const fireHot = new THREE.Color('#ff3300');  // Fast intense flare
+    const fireBase = new THREE.Color('#220500'); 
+    const fireHot = new THREE.Color('#ff3300');  
     
     const bgColor = new THREE.Color('#000000');
     bgColor.lerp(fireBase, bgIntensity);
-    bgColor.lerp(fireHot, bgIntensity * bgIntensity); // Square it for snappy hot flashes
+    bgColor.lerp(fireHot, bgIntensity * bgIntensity); 
     
     scene.background = bgColor;
     scene.fog.color = bgColor;
@@ -447,8 +456,8 @@ async function main() {
     
     // 🎥 Camera Automation Management
     if (autoRotateAxis) {
-      orbit.enabled = false; // Disable orbit control overrides while auto-rotating
-      const angle = autoRotateSpeed * speedFactor; // Scale rotation with the beat drop speed
+      orbit.enabled = false; 
+      const angle = autoRotateSpeed * speedFactor; 
       
       const axisMap = {
         'x': new THREE.Vector3(1, 0, 0),
@@ -459,7 +468,7 @@ async function main() {
       camera.position.applyAxisAngle(axisMap[autoRotateAxis], angle);
       camera.lookAt(0, 0, 0);
     } else {
-      orbit.enabled = true; // Re-enable seamlessly 
+      orbit.enabled = true; 
       orbit.update();
     }
     
